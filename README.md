@@ -126,7 +126,7 @@ cp .example.env .env
 2. **Add your API keys** to `.env`:
 ```
 OPENAI_API_KEY=your_openai_key_here
-TAVILY_API_KEY=your_tavily_key_here  # Optional: for enhanced web search
+TAVILY_API_KEY=your_tavily_key_here  
 MLFLOW_TRACKING_URI=sqlite:///mlflow.db
 ```
 
