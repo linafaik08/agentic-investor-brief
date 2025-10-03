@@ -1,461 +1,317 @@
 """
-Investor Agent - Main orchestrator for creating comprehensive investment briefs
+Simplified Investor Agent - Direct OpenAI API approach
 """
 
 import json
 import mlflow
-import mlflow.langchain
 from typing import Dict, List, Any, Optional
 from datetime import datetime
-from langchain_openai import ChatOpenAI
-from langchain.agents import AgentType, initialize_agent
-from langchain.memory import ConversationBufferMemory
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
+import openai
+from openai import OpenAI
 
 from ..config import settings, MLFLOW_CONFIG
 from ..tools.industry_research import IndustryResearchTool
 from ..tools.financial_data import FinancialDataTool
-from ..tools.analysis_builder import AnalysisBuilderTool
+from ..prompt_manager import PromptVersionManager
 
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 class InvestorAgent:
     """
-    Main agent for creating comprehensive investment briefs
-    
-    This agent orchestrates the entire process:
-    1. Research industry and market conditions
-    2. Fetch comprehensive financial data  
-    3. Build detailed investment analysis
-    4. Generate professional investor brief
+    Simplified agent that executes steps sequentially using direct OpenAI API calls
     """
     
-    def __init__(self, model_name: str = None, temperature: float = None):
-        """Initialize the investor agent"""
+    def __init__(
+            self,
+            model_name: str = None, 
+            temperature: float = None,
+            analysis_prompt_version: str = None, 
+            brief_prompt_version: str = None,
+            prompts_dir: str = "prompts"
+            ):
+        """Initialize the simplified investor agent"""
         
         # Setup MLflow tracking
         self._setup_mlflow()
         
-        # Initialize LLM
-        self.llm = ChatOpenAI(
-            model=model_name or settings.default_model,
-            temperature=temperature or settings.temperature,
-            max_tokens=settings.max_tokens
-        )
+        # Initialize OpenAI client
+        mlflow.openai.autolog()
+        self.client = OpenAI(api_key=settings.openai_api_key)
+        
+        # Model configuration
+        self.model_name = model_name or getattr(settings, 'default_model', 'gpt-5-nano')
+        self.temperature = temperature or getattr(settings, 'llm_temperature', 0.1)
+
+        # Prompt versions
+
+        self.prompt_manager = PromptVersionManager(prompts_dir)
+        self.analysis_prompt_version = analysis_prompt_version or getattr(settings, 'analysis_prompt_version', 1)
+        self.brief_prompt_version = brief_prompt_version or getattr(settings, 'brief_prompt_version', 1)
+        # Auto-register prompts in MLflow if requested
+        self._register_current_prompts_in_mlflow()
         
         # Initialize tools
-        self.tools = [
-            IndustryResearchTool(),
-            FinancialDataTool(), 
-            AnalysisBuilderTool()
-        ]
+        self.industry_tool = IndustryResearchTool()
+        self.financial_tool = FinancialDataTool()
         
-        # Setup memory for conversational capability
-        self.memory = ConversationBufferMemory(
-            memory_key="chat_history",
-            return_messages=True
-        )
-        
-        # Create the agent
-        self.agent = initialize_agent(
-            tools=self.tools,
-            llm=self.llm,
-            agent=AgentType.CONVERSATIONAL_REACT_DESCRIPTION,
-            memory=self.memory,
-            verbose=settings.verbose_logging,
-            max_iterations=10,
-            early_stopping_method="generate",
-            handle_parsing_errors=True
-        )
-        
-        # Create analysis chain for final brief generation
-        self.brief_chain = self._create_brief_chain()
-        
-        print("✅ Investor Agent initialized successfully")
-        print(f"🤖 Model: {self.llm.model_name}")
-        print(f"🔧 Tools: {[tool.name for tool in self.tools]}")
+        logging.info("Simplified Investor Agent initialized successfully")
+        logging.info(f"Model: {self.model_name}")
     
     def _setup_mlflow(self):
         """Setup MLflow tracking and experiments"""
         try:
-            # Set tracking URI
             mlflow.set_tracking_uri(MLFLOW_CONFIG["tracking_uri"])
-            
-            # Set or create experiment
             mlflow.set_experiment(MLFLOW_CONFIG["experiment_name"])
             
-            # Enable autologging for LangChain
-            if MLFLOW_CONFIG["auto_log"]:
-                mlflow.langchain.autolog(
-                    log_models=MLFLOW_CONFIG["log_models"],
-                    log_input_examples=MLFLOW_CONFIG["log_input_examples"],
-                    log_model_signatures=MLFLOW_CONFIG["log_model_signatures"]
-                )
-            
-            print("✅ MLflow tracking initialized")
+            logging.info("MLflow tracking initialized")
             
         except Exception as e:
-            print(f"⚠️  MLflow setup warning: {e}")
+            logging.warning(f"MLflow setup warning: {e}")
     
-    def _create_brief_chain(self):
-        """Create chain for final brief generation and formatting"""
-        
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a senior financial analyst creating professional investment briefs for institutional investors.
+    def _call_openai(self, system_prompt: str, user_prompt: str) -> str:
+        """Make a call to OpenAI API"""
 
-Your role is to synthesize research and analysis into a clear, actionable investment brief that helps investors make informed decisions.
-
-Key requirements:
-- Be objective and data-driven
-- Highlight both opportunities and risks
-- Provide clear recommendations with rationale
-- Use professional financial language
-- Structure information logically
-- Include quantitative metrics where available
-
-Create a comprehensive but concise brief that busy investors can quickly digest and act upon."""),
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=self.temperature,
+            )
             
-            ("human", """Based on the following analysis data, create a professional investment brief:
+            return response.choices[0].message.content
+            
+        except Exception as e:
+            logging.error(f"OpenAI API call failed: {e}")
+            return f"Error: {str(e)}"
 
-Company/Ticker: {ticker}
-Industry Research: {industry_research}
-Financial Analysis: {financial_data}
-Investment Analysis: {investment_analysis}
-
-Please create a well-structured investment brief that synthesizes this information into actionable insights.""")
-        ])
+    def _register_current_prompts_in_mlflow(self, author: str = None):
+        """Register currently used prompts in MLflow"""
+        # Register analysis prompt
+        analysis_mlflow_name = self.prompt_manager.register_prompt_in_mlflow(
+            "analysis", 
+            self.analysis_prompt_version,
+              author,
+            tags={"current_analysis": "true"}
+        )
         
-        return prompt | self.llm | StrOutputParser()
+        # Register brief prompt  
+        brief_mlflow_name = self.prompt_manager.register_prompt_in_mlflow(
+            "brief", self.brief_prompt_version, author,
+            tags={"current_brief": "true"}
+        )
+        
+        # Store MLflow names for later reference
+        self.analysis_mlflow_prompt = analysis_mlflow_name
+        self.brief_mlflow_prompt = brief_mlflow_name
+        
+        logging.info(f"Registered current prompts: {analysis_mlflow_name}, {brief_mlflow_name}")
     
-    def create_investment_brief(self, company_or_ticker: str, include_conversation: bool = True) -> Dict[str, Any]:
+    
+    def create_investment_brief(self, company_or_ticker: str) -> Dict[str, Any]:
         """
-        Create comprehensive investment brief for a company
-        
-        Args:
-            company_or_ticker: Company name or stock ticker
-            include_conversation: Whether to include conversational context
-            
-        Returns:
-            Dictionary containing the investment brief and analysis data
+        Create comprehensive investment brief using direct sequential execution
         """
         
-        with mlflow.start_run(run_name=f"investment_brief_{company_or_ticker}_{datetime.now().strftime('%Y%m%d_%H%M')}"):
+        with mlflow.start_run(run_name=f"{company_or_ticker}_{datetime.now().strftime('%Y%m%d_%H%M')}"):
             
-            try:
-                # Log input parameters
-                mlflow.log_param("company_ticker", company_or_ticker)
-                mlflow.log_param("model_name", self.llm.model_name)
-                mlflow.log_param("include_conversation", include_conversation)
-                
-                print(f"\n🎯 Creating Investment Brief for: {company_or_ticker}")
-                print("=" * 60)
-                
-                # Step 1: Industry Research
-                print("📊 Step 1: Conducting Industry Research...")
-                industry_research = self._conduct_industry_research(company_or_ticker)
-                mlflow.log_text(json.dumps(industry_research, indent=2), "industry_research.json")
-                
-                # Step 2: Financial Data Collection
-                print("💰 Step 2: Fetching Financial Data...")
-                financial_data = self._fetch_financial_data(company_or_ticker)
-                mlflow.log_text(json.dumps(financial_data, indent=2), "financial_data.json")
-                
-                # Step 3: Investment Analysis
-                print("🔍 Step 3: Building Investment Analysis...")
-                investment_analysis = self._build_investment_analysis(
-                    financial_data, industry_research, company_or_ticker
-                )
-                mlflow.log_text(json.dumps(investment_analysis, indent=2), "investment_analysis.json")
-                
-                # Step 4: Generate Final Brief
-                print("📝 Step 4: Generating Investment Brief...")
-                final_brief = self._generate_final_brief(
-                    company_or_ticker, industry_research, financial_data, investment_analysis
-                )
-                
-                # Step 5: Create Conversational Summary (if requested)
-                conversational_summary = ""
-                if include_conversation:
-                    print("💬 Step 5: Creating Conversational Summary...")
-                    conversational_summary = self._create_conversational_summary(
-                        company_or_ticker, final_brief
-                    )
-                
-                # Compile final results
-                results = {
-                    "company_ticker": company_or_ticker,
-                    "brief_generated_at": datetime.now().isoformat(),
-                    "investment_brief": final_brief,
-                    "conversational_summary": conversational_summary,
-                    "supporting_data": {
-                        "industry_research": industry_research,
-                        "financial_data": financial_data,
-                        "investment_analysis": investment_analysis
-                    },
-                    "agent_metadata": {
-                        "model_used": self.llm.model_name,
-                        "tools_used": [tool.name for tool in self.tools],
-                        "mlflow_run_id": mlflow.active_run().info.run_id if mlflow.active_run() else None
-                    }
+            # Log input parameters
+            mlflow.log_param("company_ticker", company_or_ticker)
+            mlflow.log_param("model_name", self.model_name)
+            mlflow.log_param("analysis_prompt_version", self.analysis_prompt_version)
+            mlflow.log_param("brief_prompt_version", self.brief_prompt_version)
+            
+            logging.info(f"Creating Investment Brief for: {company_or_ticker}")
+            
+            # Step 1: Gather Financial Data
+            logging.info("Step 1: Gathering financial data...")
+            
+            financial_result = self.financial_tool._run(company_or_ticker)
+            financial_data = json.loads(financial_result)
+            logging.info("✅ Financial data completed")
+            
+            # Step 2: Gather Industry Research
+            logging.info("Step 2: Gathering industry research...")
+            # Get company name from financial data
+            if financial_data and "detailed_data" in financial_data:
+                company_name = financial_data["detailed_data"].get("company_info", {}).get("company_name", company_or_ticker)
+            else:
+                company_name = company_or_ticker
+            
+            industry_result = self.industry_tool._run(company_name)
+            industry_research = json.loads(industry_result)
+            logging.info("✅ Industry research completed")
+            
+            # Step 3: Create Investment Analysis
+            logging.info("Step 3: Creating investment analysis...")
+            investment_analysis = self._create_analysis(
+                company_or_ticker, industry_research, financial_data
+            )
+            
+            # Step 4: Generate Final Brief
+            logging.info("Step 4: Generating final brief...")
+            final_brief = self._generate_brief(
+                company_or_ticker, industry_research, financial_data, investment_analysis
+            )
+            
+            # Compile results
+            results = {
+                "company_ticker": company_or_ticker,
+                "brief_generated_at": datetime.now().isoformat(),
+                "investment_brief": final_brief,
+                "supporting_data": {
+                    "industry_research": industry_research,
+                    "financial_data": financial_data,
+                    "investment_analysis": investment_analysis
+                },
+                "agent_metadata": {
+                    "model_used": self.model_name,
+                    "approach": "simplified_sequential_openai",
+                    "mlflow_run_id": mlflow.active_run().info.run_id if mlflow.active_run() else None,
+                    "brief_prompt_version": self.brief_prompt_version,
+                    "mlflow_run_id": mlflow.active_run().info.run_id if mlflow.active_run() else None
                 }
+            }
+            
+            # Log results to MLflow
+            if isinstance(results["investment_brief"], str):
+                mlflow.log_text(results["investment_brief"], "investment_brief.md")
+                mlflow.log_text(json.dumps(results["supporting_data"], indent=2), "supporting_data.json")
                 
-                # Log final results
-                mlflow.log_text(final_brief, "investment_brief.md")
-                if conversational_summary:
-                    mlflow.log_text(conversational_summary, "conversational_summary.txt")
-                
-                mlflow.log_metric("analysis_completeness", self._calculate_completeness_score(results))
-                mlflow.log_metric("brief_length_words", len(final_brief.split()))
-                
-                print("✅ Investment Brief Created Successfully!")
-                print(f"📋 Brief length: {len(final_brief.split())} words")
-                print(f"🆔 MLflow Run ID: {results['agent_metadata']['mlflow_run_id']}")
-                
-                return results
-                
-            except Exception as e:
-                error_msg = f"Investment brief creation failed: {str(e)}"
-                print(f"❌ {error_msg}")
-                mlflow.log_param("error", error_msg)
-                
-                return {
-                    "error": error_msg,
-                    "company_ticker": company_or_ticker,
-                    "timestamp": datetime.now().isoformat()
-                }
+                if results["investment_brief"]:
+                    mlflow.log_metric("brief_length_words", len(results["investment_brief"].split()))
+                    logging.info("✅ Investment Brief Created Successfully!")
+                else:
+                    logging.error("❌ Investment Brief is empty")
+            
+            return results
     
-    def _conduct_industry_research(self, company_or_ticker: str) -> Dict:
-        """Conduct industry research using the research tool"""
-        try:
-            research_tool = IndustryResearchTool()
-            result = research_tool._run(company_or_ticker)
-            return json.loads(result)
-        except Exception as e:
-            return {"error": f"Industry research failed: {str(e)}"}
-    
-    def _fetch_financial_data(self, ticker: str) -> Dict:
-        """Fetch financial data using the financial data tool"""
-        try:
-            financial_tool = FinancialDataTool()
-            result = financial_tool._run(ticker)
-            return json.loads(result)
-        except Exception as e:
-            return {"error": f"Financial data fetch failed: {str(e)}"}
-    
-    def _build_investment_analysis(self, financial_data: Dict, industry_research: Dict, ticker: str) -> Dict:
-        """Build comprehensive investment analysis"""
-        try:
-            analysis_tool = AnalysisBuilderTool()
-            
-            analysis_input = json.dumps({
-                "financial_data": financial_data,
-                "industry_research": industry_research,
-                "ticker": ticker
-            })
-            
-            result = analysis_tool._run(analysis_input)
-            return json.loads(result)
-        except Exception as e:
-            return {"error": f"Investment analysis failed: {str(e)}"}
-    
-    def _generate_final_brief(self, ticker: str, industry_research: Dict, 
-                            financial_data: Dict, investment_analysis: Dict) -> str:
-        """Generate the final investment brief using the brief chain"""
-        try:
-            # Format data for the chain
-            brief_response = self.brief_chain.invoke({
-                "ticker": ticker,
-                "industry_research": json.dumps(industry_research, indent=2)[:2000] + "...",  # Truncate for context
-                "financial_data": json.dumps(financial_data, indent=2)[:2000] + "...",
-                "investment_analysis": json.dumps(investment_analysis, indent=2)[:3000] + "..."
-            })
-            
-            return brief_response
-            
-        except Exception as e:
-            return f"Brief generation failed: {str(e)}"
-    
-    def _create_conversational_summary(self, company_ticker: str, brief: str) -> str:
-        """Create a conversational summary of the brief"""
-        try:
-            conversation_prompt = f"""
-            Based on the investment brief below, create a conversational summary as if you're 
-            explaining the investment opportunity to a colleague in 2-3 paragraphs. 
-            Be natural, engaging, and highlight the key points an investor should know.
-            
-            Investment Brief:
-            {brief[:2000]}...
-            """
-            
-            summary = self.llm.invoke(conversation_prompt).content
-            return summary
-            
-        except Exception as e:
-            return f"Conversational summary generation failed: {str(e)}"
-    
-    def _calculate_completeness_score(self, results: Dict) -> float:
-        """Calculate how complete the analysis is (0-100)"""
-        try:
-            supporting_data = results.get("supporting_data", {})
-            
-            completeness_checks = [
-                "industry_research" in supporting_data and not "error" in str(supporting_data["industry_research"]),
-                "financial_data" in supporting_data and not "error" in str(supporting_data["financial_data"]),
-                "investment_analysis" in supporting_data and not "error" in str(supporting_data["investment_analysis"]),
-                len(results.get("investment_brief", "")) > 1000,  # Substantial brief
-                results.get("conversational_summary", "") != ""  # Has summary
-            ]
-            
-            score = (sum(completeness_checks) / len(completeness_checks)) * 100
-            return round(score, 1)
-            
-        except:
-            return 0.0
-    
-    def ask_question(self, question: str) -> str:
-        """
-        Ask a follow-up question about the analysis or company
+    def _create_analysis(self, ticker: str, industry_data: Dict, financial_data: Dict) -> Dict:
+        """Create investment analysis using universal prompt manager"""
         
-        Args:
-            question: Question about the company or analysis
-            
-        Returns:
-            Agent's response to the question
-        """
-        try:
-            with mlflow.start_run(run_name=f"question_{datetime.now().strftime('%H%M%S')}", nested=True):
-                mlflow.log_param("question", question)
-                
-                response = self.agent.run(question)
-                
-                mlflow.log_text(response, "agent_response.txt")
-                mlflow.log_metric("response_length", len(response))
-                
-                return response
-                
-        except Exception as e:
-            return f"Question processing failed: {str(e)}"
-    
-    def get_conversation_history(self) -> List[Dict]:
-        """Get the conversation history"""
-        try:
-            messages = self.memory.chat_memory.messages
-            history = []
-            
-            for message in messages:
-                history.append({
-                    "type": message.__class__.__name__,
-                    "content": message.content[:500] + "..." if len(message.content) > 500 else message.content
-                })
-            
-            return history
-            
-        except Exception as e:
-            return [{"error": f"Failed to retrieve history: {str(e)}"}]
-    
-    def clear_conversation(self):
-        """Clear the conversation memory"""
-        self.memory.clear()
-        print("🧹 Conversation memory cleared")
-    
-    def export_brief(self, results: Dict, format: str = "markdown", output_path: str = None) -> str:
-        """
-        Export the investment brief to a file
+        logging.info(f"Creating investment analysis with prompt version {self.analysis_prompt_version}...")
         
-        Args:
-            results: Results from create_investment_brief
-            format: Export format ("markdown", "text", "json")
-            output_path: Optional custom output path
-            
-        Returns:
-            Path to the exported file
-        """
-        try:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            company = results.get("company_ticker", "unknown").replace("/", "_")
-            
-            if not output_path:
-                output_path = settings.output_dir / f"investment_brief_{company}_{timestamp}.{format}"
-            
-            if format == "markdown":
-                content = results.get("investment_brief", "")
-            elif format == "json":
-                content = json.dumps(results, indent=2, default=str)
-            else:  # text
-                content = results.get("investment_brief", "")
-            
-            with open(output_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            
-            print(f"📁 Brief exported to: {output_path}")
-            return str(output_path)
-            
-        except Exception as e:
-            print(f"❌ Export failed: {e}")
-            return ""
-
-
-# Convenience functions for direct usage
-def create_quick_brief(company_or_ticker: str, model_name: str = None) -> Dict[str, Any]:
-    """
-    Quick function to create an investment brief
-    
-    Args:
-        company_or_ticker: Company name or ticker symbol
-        model_name: Optional LLM model name to use
+        # Check if we have required data
+        if not industry_data or "error" in industry_data or not financial_data or "error" in financial_data:
+            error_msg = f"Missing or failed required data for analysis."
+            logging.error(error_msg)
+            return {"error": error_msg}
         
-    Returns:
-        Investment brief results
-    """
-    agent = InvestorAgent(model_name=model_name)
-    return agent.create_investment_brief(company_or_ticker)
-
-
-def analyze_multiple_companies(tickers: List[str], model_name: str = None) -> Dict[str, Dict]:
-    """
-    Analyze multiple companies in batch
-    
-    Args:
-        tickers: List of ticker symbols
-        model_name: Optional LLM model name to use
+        # Get formatted prompts using universal manager
+        formatted_prompts = self.prompt_manager.format_prompt(
+            "analysis", 
+            self.analysis_prompt_version,
+            ticker=ticker,
+            industry_data=json.dumps(industry_data, indent=2),
+            financial_data=json.dumps(financial_data, indent=2)
+        )
         
-    Returns:
-        Dictionary mapping tickers to their analysis results
-    """
-    agent = InvestorAgent(model_name=model_name)
-    results = {}
+        logging.info(f"Using analysis prompt version: {self.analysis_prompt_version}")
+        logging.info(f"Prompt length: {len(formatted_prompts['user'])} characters")
+        
+        # Call OpenAI API with formatted prompts
+        response = self._call_openai(formatted_prompts["system"], formatted_prompts["user"])
+        
+        if response and not response.startswith("Error:"):
+            analysis_result = {
+                "analysis": response,
+                "prompt_version": self.analysis_prompt_version
+            }
+            logging.info(f"Investment analysis completed successfully. Length: {len(response)}")
+            return analysis_result
+        else:
+            error_msg = f"Analysis generation failed: {response}"
+            logging.error(error_msg)
+            return {"error": error_msg}
     
-    for ticker in tickers:
-        print(f"\n🔄 Processing {ticker}...")
-        results[ticker] = agent.create_investment_brief(ticker, include_conversation=False)
-    
-    return results
+    def _generate_brief(self, ticker: str, industry_data: Dict, financial_data: Dict, analysis_data: Dict) -> str:
+        """Generate final investment brief using OpenAI API"""
+        
+        logging.info("Generating final investment brief...")
+        
+        # Check if analysis was successful
+        if not analysis_data.get("analysis"):
+            error_msg = "Cannot generate brief: missing or failed investment analysis"
+            logging.error(error_msg)
+            return error_msg
+        
+        # Prepare data summaries
+        industry_summary = self._extract_key_info(industry_data, "industry")
+        financial_summary = self._extract_key_info(financial_data, "financial")
+        
+        # Get formatted prompts using universal manager
+        formatted_prompts = self.prompt_manager.format_prompt(
+            "brief",
+            self.brief_prompt_version,
+            ticker=ticker,
+            industry_summary=industry_summary,
+            financial_summary=financial_summary,
+            analysis=analysis_data.get("analysis", "")
+        )
+        
+        logging.info(f"Using brief prompt version: {self.brief_prompt_version}")
+        
+        # Call OpenAI API with formatted prompts
+        brief = self._call_openai(formatted_prompts["system"], formatted_prompts["user"])
+        
+        if brief and not brief.startswith("Error:"):
+            logging.info("✅ Investment brief generated successfully")
+            return brief
+        else:
+            error_msg = f"Brief generation failed: {brief}"
+            logging.error(error_msg)
+            return error_msg
+        
+    def _extract_key_info(self, data: Dict, data_type: str) -> str:
+        """Extract key information from data dictionaries"""
+        
+        if not data or "error" in data:
+            return f"No {data_type} data available"
+        
+        if data_type == "industry":
+            # Extract key industry insights
+            summary = data.get("research_summary", "")
+            if summary:
+                return summary
+            else:
+                return json.dumps(data, indent=2)
+                
+        elif data_type == "financial":
+            # Handle the correct financial data structure
+            if isinstance(data, dict):
+                if "financial_summary" in data:
+                    return data["financial_summary"]
+                elif "detailed_data" in data:
+                    key_metrics = data["detailed_data"].get("key_metrics", {})
+                    price_data = data["detailed_data"].get("price_data", {})
+                    return f"Key Metrics: {json.dumps(key_metrics, indent=2)}\nPrice Data: {json.dumps(price_data, indent=2)}..."
+                else:
+                    return json.dumps(data, indent=2)
+            else:
+                return str(data)
+        
+        return json.dumps(data, indent=2)
 
 
 if __name__ == "__main__":
-    # Test the agent
-    print("🧪 Testing Investor Agent...")
+    # Test the simplified agent
+    print("Testing Investor Agent...")
     
-    # Create agent instance
     agent = InvestorAgent()
+    results = agent.create_investment_brief("AAPL")
     
-    # Test with a sample ticker
-    test_ticker = "AAPL"
-    print(f"\n📋 Creating brief for {test_ticker}...")
-    
-    # Create brief
-    results = agent.create_investment_brief(test_ticker)
-    
-    # Print summary
-    if "error" not in results:
-        print("\n✅ Brief created successfully!")
+    if "error" not in results and results.get("investment_brief"):
+        print("✅ Brief created successfully!")
         print(f"Brief preview:\n{results['investment_brief'][:500]}...")
-        
-        # Test follow-up question
-        question = f"What are the main risks for investing in {test_ticker}?"
-        print(f"\n❓ Asking: {question}")
-        response = agent.ask_question(question)
-        print(f"🤖 Response: {response[:200]}...")
-        
     else:
-        print(f"❌ Brief creation failed: {results['error']}")
+        print(f"❌ Brief creation failed")
+        if "error" in results:
+            print(f"Error: {results['error']}")
+        else:
+            print("Investment brief is empty")

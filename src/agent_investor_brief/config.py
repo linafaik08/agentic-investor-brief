@@ -28,8 +28,11 @@ class Settings(BaseSettings):
     
     # LLM Configuration
     default_model: str = Field("gpt-4o-mini", env="DEFAULT_MODEL")
-    temperature: float = Field(0.1, env="LLM_TEMPERATURE")
-    max_tokens: int = Field(2000, env="MAX_TOKENS")
+    llm_temperature: float = Field(0.1, env="LLM_TEMPERATURE")
+
+    # Prompts version
+    analysis_prompt_version: str = Field("v1", env="ANALYSIS_PROMPT_VERSION")
+    brief_prompt_version: str = Field("v1", env="BRIEF_PROMPT_VERSION")
     
     # Tool Configuration
     max_search_results: int = Field(5, env="MAX_SEARCH_RESULTS")
@@ -60,16 +63,16 @@ def setup_environment() -> Settings:
     
     # Validate required API keys
     if not settings.openai_api_key:
-        logging.info("⚠️  Warning: OPENAI_API_KEY not set. Some features may not work.")
+        logging.warning("OPENAI_API_KEY not set. Some features may not work.")
     
     # Set OpenAI API key in environment (required by langchain)
     if settings.openai_api_key:
         os.environ["OPENAI_API_KEY"] = settings.openai_api_key
     
-    logging.info("✅ Environment setup completed")
-    logging.info(f"📊 MLflow tracking: {settings.mlflow_tracking_uri}")
-    logging.info(f"🤖 Default model: {settings.default_model}")
-    logging.info(f"📁 Output directory: {settings.output_dir}")
+    logging.info("Environment setup completed")
+    logging.info(f"MLflow tracking: {settings.mlflow_tracking_uri}")
+    logging.info(f"Default model: {settings.default_model}")
+    logging.info(f"Output directory: {settings.output_dir}")
     
     return settings
 
@@ -110,9 +113,6 @@ MLFLOW_CONFIG = {
     "experiment_name": settings.mlflow_experiment_name,
     "tracking_uri": settings.mlflow_tracking_uri,
     "auto_log": settings.enable_tracing,
-    "log_models": True,
-    "log_input_examples": True,
-    "log_model_signatures": True
 }
 
 

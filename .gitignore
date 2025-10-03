@@ -200,3 +200,5 @@ temp/
 # API keys and credentials
 .api_keys
 api_config.json
+
+.db

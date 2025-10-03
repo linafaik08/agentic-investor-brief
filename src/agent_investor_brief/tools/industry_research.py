@@ -1,23 +1,19 @@
 """
-Industry Research Tool - Web search and industry analysis
+Industry Research Tool - Real web search using Tavily API
 """
 
 import json
-import requests
-from typing import Dict, List, Any, Optional
-from datetime import datetime, timedelta
-from bs4 import BeautifulSoup
-from langchain.tools import BaseTool
+import os
+from typing import Dict, List, Any
+from datetime import datetime
+
+from tavily import TavilyClient
 from pydantic import Field
 
-from ..config import settings, TOOL_CONFIGS
 
-
-class IndustryResearchTool(BaseTool):
-    """Tool for researching industry trends, news, and competitive landscape"""
+class IndustryResearchTool:
+    """Tool for researching industry trends, news, and competitive landscape using Tavily API
     
-    name: str = "industry_research"
-    description: str = """
     Research industry trends, news, and competitive landscape for a company.
     Use this tool to gather:
     - Recent industry news and developments
@@ -29,287 +25,195 @@ class IndustryResearchTool(BaseTool):
     Input should be a company name or industry sector (e.g., "Apple" or "Electric Vehicles")
     """
     
+    def __init__(self):
+        # Initialize Tavily client
+        api_key = os.getenv("TAVILY_API_KEY")
+        if not api_key:
+            raise ValueError("TAVILY_API_KEY environment variable is required")
+        self._tavily_client = TavilyClient(api_key=api_key)
+    
     def _run(self, query: str) -> str:
         """Execute industry research for the given query"""
         try:
-            config = TOOL_CONFIGS["industry_research"]
-            
-            # Multi-source research approach
             results = {
                 "query": query,
                 "timestamp": datetime.now().isoformat(),
-                "sources": []
+                "research_data": []
             }
             
-            # 1. General web search for recent news
-            news_results = self._search_recent_news(query, config)
-            results["sources"].extend(news_results)
+            # 1. Recent industry news
+            news_data = self._search_recent_news(query)
+            results["research_data"].extend(news_data)
             
-            # 2. Industry analysis from financial sites
-            financial_news = self._search_financial_news(query, config)
-            results["sources"].extend(financial_news)
+            # 2. Market trends and analysis
+            trends_data = self._search_market_trends(query)
+            results["research_data"].extend(trends_data)
             
-            # 3. Market trends and insights
-            trend_analysis = self._analyze_market_trends(query, config)
-            results["trend_analysis"] = trend_analysis
-            
-            # 4. Competitive landscape (basic)
-            competitive_info = self._basic_competitive_analysis(query, config)
-            results["competitive_landscape"] = competitive_info
+            # 3. Competitive landscape
+            competitive_data = self._search_competitive_info(query)
+            results["research_data"].extend(competitive_data)
             
             # Format results for LLM consumption
             summary = self._format_research_summary(results)
             
             return json.dumps({
                 "research_summary": summary,
-                "detailed_data": results,
-                "recommendation": "Use this information to assess industry outlook and competitive position"
+                "total_sources": len(results["research_data"]),
             }, indent=2)
             
         except Exception as e:
             return json.dumps({
                 "error": f"Industry research failed: {str(e)}",
                 "query": query,
-                "suggestion": "Try a more specific company name or industry term"
+                "suggestion": "Check your Tavily API key and try a more specific company name or industry term"
             })
     
-    def _search_recent_news(self, query: str, config: Dict) -> List[Dict]:
-        """Search for recent news articles"""
-        results = []
-        
+    def _search_recent_news(self, query: str) -> List[Dict]:
+        """Search for recent industry news"""
         try:
-            # Simple Google search simulation (in production, use proper news APIs)
-            search_terms = [
-                f"{query} news recent",
-                f"{query} industry trends 2024",
-                f"{query} market analysis"
-            ]
+            # Search for recent news
+            search_query = f"{query} industry news recent developments"
+            response = self._tavily_client.search(
+                query=search_query,
+                search_depth="advanced",
+                max_results=5,
+                include_domains=["reuters.com", "bloomberg.com", "cnbc.com", "techcrunch.com", "wsj.com"]
+            )
             
-            for term in search_terms:
-                # Simulate news search results
-                simulated_results = self._simulate_news_search(term)
-                results.extend(simulated_results)
-                
-                if len(results) >= config["max_results"]:
-                    break
+            news_results = []
+            for result in response.get("results", []):
+                news_results.append({
+                    "type": "news",
+                    "title": result.get("title", ""),
+                    "content": result.get("content", ""),
+                    "url": result.get("url", ""),
+                    "score": result.get("score", 0),
+                    "published_date": result.get("published_date", "")
+                })
+            
+            return news_results
             
         except Exception as e:
-            results.append({
-                "source": "news_search_error",
-                "content": f"News search failed: {str(e)}"
-            })
-        
-        return results[:config["max_results"]]
+            return [{"type": "news_error", "error": str(e)}]
     
-    def _search_financial_news(self, query: str, config: Dict) -> List[Dict]:
-        """Search financial news sources"""
-        results = []
-        
+    def _search_market_trends(self, query: str) -> List[Dict]:
+        """Search for market trends and analysis"""
         try:
-            # Simulate financial news from major sources
-            financial_sources = [
-                "Reuters Finance",
-                "Bloomberg",
-                "Financial Times",
-                "MarketWatch",
-                "Yahoo Finance"
-            ]
+            # Search for market trends
+            search_query = f"{query} market trends analysis growth outlook 2024 2025"
+            response = self._tavily_client.search(
+                query=search_query,
+                search_depth="advanced",
+                max_results=4,
+                include_domains=["marketwatch.com", "seekingalpha.com", "fool.com", "barrons.com", "morningstar.com"]
+            )
             
-            for source in financial_sources[:3]:  # Limit to top 3 sources
-                result = self._simulate_financial_news(query, source)
-                if result:
-                    results.append(result)
+            trends_results = []
+            for result in response.get("results", []):
+                trends_results.append({
+                    "type": "market_trends",
+                    "title": result.get("title", ""),
+                    "content": result.get("content", ""),
+                    "url": result.get("url", ""),
+                    "score": result.get("score", 0)
+                })
+            
+            return trends_results
             
         except Exception as e:
-            results.append({
-                "source": "financial_news_error",
-                "content": f"Financial news search failed: {str(e)}"
-            })
-        
-        return results
+            return [{"type": "trends_error", "error": str(e)}]
     
-    def _analyze_market_trends(self, query: str, config: Dict) -> Dict:
-        """Analyze market trends for the industry/company"""
+    def _search_competitive_info(self, query: str) -> List[Dict]:
+        """Search for competitive landscape information"""
         try:
-            # Simulate trend analysis
-            trends = {
-                "growth_outlook": "positive",  # positive, neutral, negative
-                "key_drivers": [
-                    "Digital transformation acceleration",
-                    "Regulatory environment changes",
-                    "Consumer behavior shifts",
-                    "Technological innovations"
-                ],
-                "challenges": [
-                    "Market saturation concerns",
-                    "Supply chain disruptions",
-                    "Competition intensification",
-                    "Economic uncertainty"
-                ],
-                "time_horizon": "12-18 months",
-                "confidence_level": "medium"
-            }
+            # Search for competitive analysis
+            search_query = f"{query} competitors competitive analysis market share"
+            response = self._tavily_client.search(
+                query=search_query,
+                search_depth="basic",
+                max_results=3
+            )
             
-            # Customize based on query (basic logic)
-            if any(tech_term in query.lower() for tech_term in ["tech", "software", "ai", "cloud"]):
-                trends["growth_outlook"] = "positive"
-                trends["key_drivers"].insert(0, "AI and automation adoption")
+            competitive_results = []
+            for result in response.get("results", []):
+                competitive_results.append({
+                    "type": "competitive",
+                    "title": result.get("title", ""),
+                    "content": result.get("content", ""),
+                    "url": result.get("url", ""),
+                    "score": result.get("score", 0)
+                })
             
-            elif any(traditional_term in query.lower() for traditional_term in ["retail", "manufacturing", "automotive"]):
-                trends["growth_outlook"] = "neutral"
-                trends["challenges"].insert(0, "Digital disruption pressure")
-            
-            return trends
+            return competitive_results
             
         except Exception as e:
-            return {"error": f"Trend analysis failed: {str(e)}"}
-    
-    def _basic_competitive_analysis(self, query: str, config: Dict) -> Dict:
-        """Basic competitive landscape analysis"""
-        try:
-            # Simulate competitive analysis
-            competitive_info = {
-                "market_position": "established_player",  # leader, established_player, challenger, niche
-                "key_competitors": [
-                    "Competitor A (market leader)",
-                    "Competitor B (fast-growing challenger)",
-                    "Competitor C (traditional player)"
-                ],
-                "competitive_advantages": [
-                    "Strong brand recognition",
-                    "Established distribution network",
-                    "Technology leadership"
-                ],
-                "competitive_threats": [
-                    "New market entrants",
-                    "Disruptive technologies",
-                    "Price competition"
-                ],
-                "market_share_trend": "stable"  # growing, stable, declining
-            }
-            
-            return competitive_info
-            
-        except Exception as e:
-            return {"error": f"Competitive analysis failed: {str(e)}"}
-    
-    def _simulate_news_search(self, term: str) -> List[Dict]:
-        """Simulate news search results (replace with real API calls)"""
-        # In production, integrate with:
-        # - News API (newsapi.org)
-        # - Google News API
-        # - Tavily Search API
-        # - Bing News API
-        
-        simulated_articles = [
-            {
-                "source": "TechCrunch",
-                "title": f"Industry Analysis: {term} Shows Strong Growth Potential",
-                "content": f"Recent analysis indicates that {term} sector is experiencing robust growth driven by technological innovation and changing consumer preferences. Market analysts project continued expansion over the next 12-18 months.",
-                "url": f"https://example.com/news/{term.replace(' ', '-')}",
-                "published_date": (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d"),
-                "relevance_score": 0.85
-            },
-            {
-                "source": "Reuters",
-                "title": f"Market Update: {term} Faces Regulatory Headwinds",
-                "content": f"New regulatory proposals could impact {term} operations, though long-term outlook remains positive according to industry experts. Companies are adapting strategies to navigate changing compliance landscape.",
-                "url": f"https://example.com/reuters/{term.replace(' ', '-')}",
-                "published_date": (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d"),
-                "relevance_score": 0.78
-            }
-        ]
-        
-        return simulated_articles
-    
-    def _simulate_financial_news(self, query: str, source: str) -> Optional[Dict]:
-        """Simulate financial news from specific sources"""
-        financial_insights = {
-            "source": source,
-            "title": f"{query} Financial Outlook - {source} Analysis",
-            "content": f"Financial analysis from {source} suggests {query} is well-positioned for growth. Key metrics show improved operational efficiency and strong cash flow generation. However, investors should monitor market volatility and competitive pressures.",
-            "key_metrics": [
-                "Revenue growth trending positive",
-                "Margin expansion opportunities identified",
-                "Strong balance sheet fundamentals",
-                "Manageable debt levels"
-            ],
-            "analyst_rating": "neutral_to_positive",
-            "published_date": (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-        }
-        
-        return financial_insights
+            return [{"type": "competitive_error", "error": str(e)}]
     
     def _format_research_summary(self, results: Dict) -> str:
         """Format research results into a comprehensive summary"""
         summary_parts = []
         
-        # Industry Overview
-        summary_parts.append(f"## Industry Research Summary for {results['query']}")
-        summary_parts.append(f"Research Date: {results['timestamp'][:10]}")
+        # Header
+        summary_parts.append(f"# Industry Research Report: {results['query']}")
+        summary_parts.append(f"**Research Date:** {results['timestamp']}")
+        summary_parts.append(f"**Total Sources:** {len(results['research_data'])}")
         
-        # Recent News Summary
-        if results["sources"]:
-            summary_parts.append("\n### Recent News & Developments")
-            for source in results["sources"][:3]:  # Top 3 sources
-                if "title" in source:
-                    summary_parts.append(f"- **{source['title']}** ({source.get('source', 'Unknown')})")
-                    if "content" in source:
-                        summary_parts.append(f"  {source['content'][:200]}...")
+        # Group results by type
+        news_items = [r for r in results['research_data'] if r.get('type') == 'news']
+        trends_items = [r for r in results['research_data'] if r.get('type') == 'market_trends']
+        competitive_items = [r for r in results['research_data'] if r.get('type') == 'competitive']
         
-        # Market Trends
-        if "trend_analysis" in results:
-            trends = results["trend_analysis"]
-            summary_parts.append(f"\n### Market Trends Analysis")
-            summary_parts.append(f"- **Growth Outlook**: {trends.get('growth_outlook', 'Unknown')}")
-            summary_parts.append(f"- **Key Drivers**: {', '.join(trends.get('key_drivers', [])[:3])}")
-            summary_parts.append(f"- **Main Challenges**: {', '.join(trends.get('challenges', [])[:3])}")
+        # Recent News Section
+        if news_items:
+            summary_parts.append("\n## Recent Industry News")
+            for item in news_items:  # Top news items
+                summary_parts.append(f"**{item.get('title', 'N/A')}**")
+                summary_parts.append(f"{item.get('content', '')}...")
+                summary_parts.append(f"*Source: {item.get('url', 'N/A')}*\n")
         
-        # Competitive Landscape
-        if "competitive_landscape" in results:
-            comp = results["competitive_landscape"]
-            summary_parts.append(f"\n### Competitive Position")
-            summary_parts.append(f"- **Market Position**: {comp.get('market_position', 'Unknown')}")
-            summary_parts.append(f"- **Key Competitors**: {', '.join(comp.get('key_competitors', [])[:3])}")
-            summary_parts.append(f"- **Market Share Trend**: {comp.get('market_share_trend', 'Unknown')}")
+        # Market Trends Section
+        if trends_items:
+            summary_parts.append("## Market Trends & Analysis")
+            for item in trends_items:  # Top trend items
+                summary_parts.append(f"**{item.get('title', 'N/A')}**")
+                summary_parts.append(f"{item.get('content', '')}...")
+                summary_parts.append(f"*Source: {item.get('url', 'N/A')}*\n")
+        
+        # Competitive Landscape Section
+        if competitive_items:
+            summary_parts.append("## Competitive Landscape")
+            for item in competitive_items:  # Top competitive items
+                summary_parts.append(f"**{item.get('title', 'N/A')}**")
+                summary_parts.append(f"{item.get('content', '')}...")
+                summary_parts.append(f"*Source: {item.get('url', 'N/A')}*\n")
+        
+        # Add any errors found
+        error_items = [r for r in results['research_data'] if 'error' in r.get('type', '')]
+        if error_items:
+            summary_parts.append("## Research Notes")
+            for error in error_items:
+                summary_parts.append(f"- {error.get('type', 'Error')}: {error.get('error', 'Unknown error')}")
         
         return "\n".join(summary_parts)
-    
-    def _arun(self, query: str) -> str:
-        """Async version (not implemented)"""
-        raise NotImplementedError("Async version not implemented")
-
-
-# Convenience function for standalone usage
-def research_industry(company_or_industry: str) -> Dict[str, Any]:
-    """
-    Standalone function to research industry information
-    
-    Args:
-        company_or_industry: Company name or industry sector to research
-        
-    Returns:
-        Dictionary containing research results
-    """
-    tool = IndustryResearchTool()
-    result_str = tool._run(company_or_industry)
-    
-    try:
-        return json.loads(result_str)
-    except json.JSONDecodeError:
-        return {"error": "Failed to parse research results", "raw_result": result_str}
-
 
 if __name__ == "__main__":
     # Test the tool
+    # Make sure to set TAVILY_API_KEY environment variable
+    
+    if not os.getenv("TAVILY_API_KEY"):
+        print("Please set TAVILY_API_KEY environment variable")
+        print("Get your API key from: https://app.tavily.com/")
+        exit(1)
+    
     tool = IndustryResearchTool()
     
-    test_queries = ["Apple", "Electric Vehicles", "Cloud Computing"]
+    test_queries = ["Tesla", "Cloud Computing", "Renewable Energy"]
     
     for query in test_queries:
-        print(f"\n{'='*50}")
+        print(f"\n{'='*60}")
         print(f"Testing Industry Research: {query}")
-        print(f"{'='*50}")
+        print(f"{'='*60}")
         
         result = tool._run(query)
         print(result)
+        print("\n" + "="*60)

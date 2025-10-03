@@ -8,30 +8,34 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
-from langchain.tools import BaseTool
-from pydantic import Field
 
 from ..config import settings, TOOL_CONFIGS
 
 
-class FinancialDataTool(BaseTool):
+class FinancialDataTool:
     """Tool for fetching comprehensive financial data from Yahoo Finance"""
     
-    name: str = "financial_data"
-    description: str = """
-    Fetch comprehensive financial data for publicly traded companies using Yahoo Finance.
-    Provides:
-    - Stock price history and current metrics
-    - Financial statements (income, balance sheet, cash flow)
-    - Key financial ratios and performance indicators
-    - Analyst recommendations and target prices
-    - Dividend information and yield
+    # REMOVE: name: str = "financial_data"
+    # REMOVE: description: str = """..."""
     
-    Input should be a stock ticker symbol (e.g., "AAPL", "TSLA", "MSFT")
-    """
+    def __init__(self):
+        """Initialize the financial data tool"""
+        self.name = "financial_data"
+        self.description = """
+        Fetch comprehensive financial data for publicly traded companies using Yahoo Finance.
+        Provides:
+        - Stock price history and current metrics
+        - Financial statements (income, balance sheet, cash flow)
+        - Key financial ratios and performance indicators
+        - Analyst recommendations and target prices
+        - Dividend information and yield
+        
+        Input should be a stock ticker symbol (e.g., "AAPL", "TSLA", "MSFT")
+        """
     
     def _run(self, ticker: str) -> str:
         """Fetch comprehensive financial data for the given ticker"""
+        # REST OF THE METHOD REMAINS EXACTLY THE SAME
         try:
             config = TOOL_CONFIGS["financial_data"]
             ticker = ticker.upper().strip()
@@ -80,7 +84,7 @@ class FinancialDataTool(BaseTool):
                 "employees": info.get("fullTimeEmployees", 0),
                 "country": info.get("country", "Unknown"),
                 "website": info.get("website", ""),
-                "business_summary": info.get("longBusinessSummary", "")[:500] + "..." if info.get("longBusinessSummary") else ""
+                "business_summary": info.get("longBusinessSummary", "") if info.get("longBusinessSummary") else ""
             }
         except Exception as e:
             return {"error": f"Company info unavailable: {str(e)}"}
@@ -118,7 +122,7 @@ class FinancialDataTool(BaseTool):
                     "3_months": float(returns_3m),
                     "ytd": float(returns_ytd)
                 },
-                "volatility_30d": float(hist['Close'].pct_change().rolling(30).std() * np.sqrt(252) * 100),
+                "volatility_30d": float(hist['Close'].pct_change().rolling(30).std().iloc[-1] * np.sqrt(252) * 100),
                 "beta": info.get("beta", 1.0)
             }
         except Exception as e:
@@ -430,26 +434,6 @@ class FinancialDataTool(BaseTool):
     def _arun(self, ticker: str) -> str:
         """Async version (not implemented)"""
         raise NotImplementedError("Async version not implemented")
-
-
-# Convenience function for standalone usage
-def get_financial_data(ticker: str) -> Dict[str, Any]:
-    """
-    Standalone function to get financial data
-    
-    Args:
-        ticker: Stock ticker symbol (e.g., "AAPL")
-        
-    Returns:
-        Dictionary containing financial data
-    """
-    tool = FinancialDataTool()
-    result_str = tool._run(ticker)
-    
-    try:
-        return json.loads(result_str)
-    except json.JSONDecodeError:
-        return {"error": "Failed to parse financial data", "raw_result": result_str}
 
 
 if __name__ == "__main__":
